@@ -4,6 +4,7 @@ import os
 import pickle
 import random
 import time
+import itertools
 
 import joblib
 import lmdb
@@ -798,6 +799,7 @@ def featurize(
     device='cpu',
     add_special_tokens=False,
     deterministic=False,
+    tied_positions_dict=None
 ):
     padding_idx, eos_idx, cls_idx = alphabet.padding_idx, alphabet.eos_idx, alphabet.cls_idx
 
@@ -866,37 +868,72 @@ def featurize(
             name = f"{name}_{v_chain}"
         names.append(name)
 
-        for step, letter in enumerate(all_chains):
-            if letter in visible_chains:
-                chain_seq = b[f'seq_chain_{letter}']
-                chain_length = len(chain_seq)
-                chain_coords = b[f'coords_chain_{letter}']  # this is a dictionary
-                chain_mask = np.zeros(chain_length)  # 0.0 for visible chains
-                x_chain = np.stack([chain_coords[c] for c in [f'N_chain_{letter}', f'CA_chain_{letter}', f'C_chain_{letter}', f'O_chain_{letter}']], 1)  # [chain_length,4,3]
-                x_chain_list.append(x_chain)
-                chain_mask_list.append(chain_mask)
-                chain_seq_list.append(chain_seq)
-                chain_encoding_list.append(c * np.ones(np.array(chain_mask).shape[0]))
-                l1 += chain_length
-                mask_self[i, l0:l1, l0:l1] = np.zeros([chain_length, chain_length])
-                residue_idx[i, l0:l1] = 100 * (c - 1) + np.arange(l0, l1)
-                l0 += chain_length
-                c += 1
-            elif letter in masked_chains:
-                chain_seq = b[f'seq_chain_{letter}']
-                chain_length = len(chain_seq)
-                chain_coords = b[f'coords_chain_{letter}']  # this is a dictionary
-                chain_mask = np.ones(chain_length)  # 0.0 for visible chains
-                x_chain = np.stack([chain_coords[c] for c in [f'N_chain_{letter}', f'CA_chain_{letter}', f'C_chain_{letter}', f'O_chain_{letter}']], 1)  # [chain_lenght,4,3]
-                x_chain_list.append(x_chain)
-                chain_mask_list.append(chain_mask)
-                chain_seq_list.append(chain_seq)
-                chain_encoding_list.append(c * np.ones(np.array(chain_mask).shape[0]))
-                l1 += chain_length
-                mask_self[i, l0:l1, l0:l1] = np.zeros([chain_length, chain_length])
-                residue_idx[i, l0:l1] = 100 * (c - 1) + np.arange(l0, l1)
-                l0 += chain_length
-                c += 1
+        # for step, letter in enumerate(all_chains):
+        #     if letter in visible_chains: # Conditioning chain
+        #         chain_seq = b[f'seq_chain_{letter}']
+        #         chain_length = len(chain_seq)
+        #         chain_coords = b[f'coords_chain_{letter}']  # this is a dictionary
+        #         chain_mask = np.zeros(chain_length)  # 0.0 for visible chains
+        #         x_chain = np.stack([chain_coords[c] for c in [f'N_chain_{letter}', f'CA_chain_{letter}', f'C_chain_{letter}', f'O_chain_{letter}']], 1)  # [chain_length,4,3]
+        #         x_chain_list.append(x_chain)
+        #         chain_mask_list.append(chain_mask)
+        #         chain_seq_list.append(chain_seq)
+        #         chain_encoding_list.append(c * np.ones(np.array(chain_mask).shape[0]))
+        #         l1 += chain_length
+        #         mask_self[i, l0:l1, l0:l1] = np.zeros([chain_length, chain_length])
+        #         residue_idx[i, l0:l1] = 100 * (c - 1) + np.arange(l0, l1)
+        #         l0 += chain_length
+        #         c += 1
+        #     elif letter in masked_chains: # Nanobody chain
+        #         chain_seq = b[f'seq_chain_{letter}']
+        #         chain_length = len(chain_seq)
+        #         chain_coords = b[f'coords_chain_{letter}']  # this is a dictionary
+        #         chain_mask = np.ones(chain_length)  # 0.0 for visible chains
+        #         x_chain = np.stack([chain_coords[c] for c in [f'N_chain_{letter}', f'CA_chain_{letter}', f'C_chain_{letter}', f'O_chain_{letter}']], 1)  # [chain_lenght,4,3]
+        #         x_chain_list.append(x_chain)
+        #         chain_mask_list.append(chain_mask)
+        #         chain_seq_list.append(chain_seq)
+        #         chain_encoding_list.append(c * np.ones(np.array(chain_mask).shape[0]))
+        #         l1 += chain_length
+        #         mask_self[i, l0:l1, l0:l1] = np.zeros([chain_length, chain_length])
+        #         residue_idx[i, l0:l1] = 100 * (c - 1) + np.arange(l0, l1)
+        #         l0 += chain_length
+        #         c += 1
+               
+        masked_chain_seq_list = []
+        visible_chain_seq_list = [] 
+        for letter in all_chains: # 'masked_list': ['B'], 'visible_list': ['A']
+
+            # Common operations
+            chain_seq = b[f'seq_chain_{letter}']
+            chain_length = len(chain_seq)
+            chain_coords = b[f'coords_chain_{letter}']
+            # Use zeros for visible chains, ones for masked chains.
+            chain_mask = np.zeros(chain_length) if letter in visible_chains else np.ones(chain_length)
+            # Stack coordinates for atoms N, CA, C, O.
+            x_chain = np.stack([chain_coords[f'{atom}_chain_{letter}'] for atom in ['N', 'CA', 'C', 'O']], axis=1)
+
+            # Append processed data to lists that need to maintain the original order.
+            x_chain_list.append(x_chain)
+            chain_mask_list.append(chain_mask)
+            chain_encoding_list.append(c * np.ones(chain_mask.shape))
+
+            # Instead of appending directly to chain_seq_list,
+            # store in a temporary list based on whether it's masked.
+            if letter in masked_chains:
+                masked_chain_seq_list.append(chain_seq)
+            else:
+                visible_chain_seq_list.append(chain_seq)
+
+            # Update indices and counters.
+            l1 += chain_length
+            mask_self[i, l0:l1, l0:l1] = np.zeros((chain_length, chain_length))
+            residue_idx[i, l0:l1] = 100 * (c - 1) + np.arange(l0, l1)
+            l0 += chain_length
+            c += 1
+
+        # Combine the masked and visible sequences so that masked chains come first.
+        chain_seq_list = masked_chain_seq_list + visible_chain_seq_list
 
         all_sequence = "".join(chain_seq_list)
         seqs.append(all_sequence[:])
@@ -931,10 +968,11 @@ def featurize(
         chain_encoding_all[i, :] = chain_encoding_pad
 
         
-        letter_list_np = np.array(letter_list)
+        # letter_list_np = np.array(letter_list)
+        letter_list_np = np.array(all_chains)
         tied_pos_list_of_lists = []
         tied_beta = np.ones(L_max)
-        if tied_positions_dict!=None:
+        if tied_positions_dict!=None: # added tied_positions_dict=None as parameter to function
             tied_pos_list = tied_positions_dict[b['name']]
             if tied_pos_list:
                 set_chains_tied = set(list(itertools.chain(*[list(item) for item in tied_pos_list])))

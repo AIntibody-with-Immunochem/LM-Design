@@ -73,7 +73,7 @@ class ESM2Adapter(FixedBackboneDesignEncoderDecoder):
         step, max_step = prev_decoder_out['step'], prev_decoder_out['max_step']
         temperature = prev_decoder_out['temperature']
         history = prev_decoder_out['history']
-        tied_pos_list = prev_decoder_out['tied_pos_list']
+        # tied_pos_list = prev_decoder_out['tied_pos_list']
 
         # output_masks = output_tokens.eq(self.mask_idx)  # & coord_mask
         output_masks = output_tokens.ne(self.padding_idx)  # & coord_mask
@@ -96,15 +96,15 @@ class ESM2Adapter(FixedBackboneDesignEncoderDecoder):
         # if tied positions are given, 
         # we force the logits of the tied positions
         # to be their sumation
-        logits = apply_tied_pos_fn(tied_pos_list, logits, fn=lambda x: x.sum(0))
+        # logits = apply_tied_pos_fn(tied_pos_list, logits, fn=lambda x: x.sum(0))
 
         _tokens, _scores = sample_from_categorical(logits, temperature=temperature)
 
         # if tied positions are given,
         # we also force the prediction of the tied positions
         # to be the same
-        _tokens = apply_tied_pos_fn(tied_pos_list, _tokens, fn=lambda x: x[0])
-        _scores = apply_tied_pos_fn(tied_pos_list, _scores, fn=lambda x: x[0])
+        # _tokens = apply_tied_pos_fn(tied_pos_list, _tokens, fn=lambda x: x[0])
+        # _scores = apply_tied_pos_fn(tied_pos_list, _scores, fn=lambda x: x[0])
 
         output_tokens.masked_scatter_(output_masks, _tokens[output_masks])
         output_scores.masked_scatter_(output_masks, _scores[output_masks])

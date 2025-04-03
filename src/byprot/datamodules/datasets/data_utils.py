@@ -26,9 +26,11 @@ class Alphabet(object):
         self._alphabet = None
 
         if name == 'esm':
+            print('[DEBUG - data_utils.py] Using esm alphabet')
             self._alphabet = esm.Alphabet.from_architecture('ESM-1b')
             self.add_special_tokens = True
         elif name == 'protein_mpnn':
+            print('[DEBUG - data_utils.py] Using protein_mpnn alphabet')
             self._alphabet = esm.Alphabet(
                 standard_toks=['A', 'R', 'N', 'D', 'C', 'Q', 'E', 'G', 'H', 'I',
                                'L', 'K', 'M', 'F', 'P', 'S', 'T', 'W', 'Y', 'V'],
@@ -39,11 +41,15 @@ class Alphabet(object):
             )
             self.add_special_tokens = False
         else:
+            print('[DEBUG - data_utils.py] Name is not esm or protein_mpnn, using default alphabet')
             self._alphabet = esm.Alphabet(**alphabet_cfg)
             self.add_special_tokens = self._alphabet.prepend_bos and self._alphabet.append_eos
 
+        # print(f'[DEBUG - data_utils.py] Setting self._featurizer using featurizer={featurizer} and featurizer_cfg={featurizer_cfg}')    
+        # print(f'Is featurizer_cfg empty? Here: {featurizer_cfg}')
         self._featurizer = self.get_featurizer(featurizer, **featurizer_cfg)
-
+        # print(f'[DEBUG - data_utils.py] self._featurizer is {self._featurizer}')
+        
     def __getattr__(self, name: str) -> Any:
         try:
             return getattr(self._alphabet, name)
@@ -60,6 +66,7 @@ class Alphabet(object):
                               to_pifold_format=kwds.get('to_pifold_format', False),
                               coord_nan_to_zero=kwds.get('coord_nan_to_zero', True))
         elif name == 'multichain':
+            # print(f'[DEBUG - data_utils.py] Using multichain featurizer since name={name} and passing kwds={kwds}')
             from .multichain import Featurizer
             return Featurizer(self, **kwds)
 
@@ -68,6 +75,7 @@ class Alphabet(object):
         return self._featurizer
 
     def featurize(self, raw_batch, **kwds):
+        # print(f'[DEBUG - data_utils.py] Alphabet.featurize will return self._featurizer: raw_batch={raw_batch}')
         return self._featurizer(raw_batch, **kwds)
 
     def decode(self, batch_ids, return_as='str', remove_special=False):
@@ -91,6 +99,7 @@ class Alphabet(object):
 # modified from protein mpnn
 class DataProcessor(object):
     def parse_PDB(self, path_to_pdb, input_chain_list=None, masked_chain_list=None, ca_only=False):
+        print('Parsing PDB...')
         c=0
         pdb_dict_list = []
         init_alphabet = ['A', 'B', 'C', 'D', 'E', 'F', 'G','H', 'I', 'J','K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T','U', 'V','W','X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g','h', 'i', 'j','k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't','u', 'v','w','x', 'y', 'z']
@@ -115,7 +124,8 @@ class DataProcessor(object):
             concat_O = []
             concat_mask = []
             coords_dict = {}
-            for letter in chain_alphabet:
+            # for letter in chain_alphabet:
+            for letter in input_chain_list: # Binder chain must be first
                 if ca_only:
                     sidechain_atoms = ['CA']
                 else:
@@ -135,8 +145,10 @@ class DataProcessor(object):
                     my_dict['coords_chain_'+letter] = coords_dict_chain
                     concat_coords.append(xyz.astype(np.float32))
                     if letter in masked_chain_list:
+                        print('Finished parsing chain {}'.format(letter))
                         masked_list.append(letter)
                     else:
+                        print('Finished parsing chain {}'.format(letter))
                         visible_list.append(letter)
                     s += 1
             fi = biounit.rfind("/")
@@ -149,6 +161,21 @@ class DataProcessor(object):
             if s <= len(chain_alphabet):
                 pdb_dict_list.append(my_dict)
                 c+=1
+            '''
+            my_dict will have the following keys for each chain:
+                { 'seq_chain_A': sequence of chain A,
+                  'coords_chain_A': coordinates of chain A,
+                  'seq_chain_B': sequence of chain B,
+                  'coords_chain_B': coordinates of chain B,
+                  'name': name of the biounit,
+                  'num_of_chains': 2,
+                  'seq': concatenated sequence of all chains,
+                  'coords': concatenated coordinates of all chains,
+                  'masked_list': ['B'] (masked chain),
+                  'visible_list': ['B', 'A'] (visible chains),
+                }
+            '''
+
         return pdb_dict_list[0]
 
     def parse_PDB_biounits(self, x, atoms=['N','CA','C'], chain=None):

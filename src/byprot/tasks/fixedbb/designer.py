@@ -59,6 +59,7 @@ class Designer:
         self._initialize()
 
     def _initialize(self):
+        # print('[DEBUG - designer.py] Initializing class Designer by loading experiment...')
         pl_task, exp_cfg = utils.load_from_experiment(
             self.experiment_path)
         self.exp_cfg = exp_cfg
@@ -69,12 +70,15 @@ class Designer:
         if self.cfg.cuda: 
             self._cuda()
 
+        # print(f'[DEBUG - designer.py] Setting self.alphabet to {pl_task.alphabet}')
+        # print(f'[DEBUG - designer.py] pl_task is {pl_task}')
         self.alphabet = pl_task.alphabet
         self.data_processor = DataProcessor()
 
         self.cfg.generator = utils.config.merge_config(
             pl_task.hparams.generator, self.cfg.generator
         )
+        # print(f'[DEBUG - designer.py] Initializing self.generator with {self.cfg.generator} and self.alphabet')
         self.generator = IterativeRefinementGenerator(
             alphabet=self.alphabet, 
             **self.cfg.generator
@@ -113,9 +117,24 @@ class Designer:
         # coords, native_seq = io.load_coords(pdb_path, None)
         self._structure = self.data_processor.parse_PDB(
             pdb_path, 
-            input_chain_list=chain_list, 
-            masked_chain_list=masked_chain_list
+            input_chain_list=chain_list, # A list like chain_list=['B', 'A']
+            masked_chain_list=masked_chain_list # A list like masked_chain_list=['B']
         )
+        # print(f'self._structure={self._structure}')
+        '''
+        self._structure will have the following keys:
+                { 'seq_chain_A': sequence of chain A,
+                  'coords_chain_A': coordinates of chain A,
+                  'seq_chain_B': sequence of chain B,
+                  'coords_chain_B': coordinates of chain B,
+                  'name': name of the biounit,
+                  'num_of_chains': 2,
+                  'seq': concatenated sequence of all chains,
+                  'coords': concatenated coordinates of all chains,
+                  'masked_list': ['B'] (masked chain),
+                  'visible_list': ['A'] (visible chains),
+                }
+        '''
 
         # self._structure = {
         #     'name': pdb_id,
@@ -191,24 +210,53 @@ class Designer:
             f.write(html.data)
 
     def inpaint(self, start_ids, end_ids, generator_args={}, need_attn_weights=False):
-        batch = self.alphabet.featurize(raw_batch=[self._structure])
+        # print(f'[DEBUG - designer.py] Inpainting with start_ids={start_ids} and end_ids={end_ids}')
+        # print(f'[DEBUG - designer.py] self._structure={self._structure}')
+        batch = self.alphabet.featurize(raw_batch=[self._structure]) # This will use the multichain featurizer
+        # print(f'[DEGUG - designer.py] Featurized batch={batch}')
         if self.cfg.cuda:
+            print('Using GPU')
             batch = utils.recursive_to(batch, self._device)
-
         prev_tokens = batch['tokens'].clone()
-        for sid, eid in zip(start_ids, end_ids):
+        # print(f'[DEBUG - designer.py] Original tokens before masking: {self.alphabet.decode(prev_tokens, remove_special=True)}')
+
+        # Print the segments we're going to mask
+        print("\n===== CDR REGIONS TO BE MASKED =====")
+        for i, (sid, eid) in enumerate(zip(start_ids, end_ids)):
+            segment = self.alphabet.decode(prev_tokens[..., sid:eid+1], remove_special=True)
+            print(f"CDR Region {i+1} [{sid}:{eid+1}] (length: {eid-sid+1}): {segment}")
             prev_tokens[..., sid:eid+1] = self.alphabet.mask_idx
+        print("====================================\n")
 
+        # print(f'[DEBUG - designer.py] Tokens after masking: {self.alphabet.decode(prev_tokens, remove_special=True)}')
         batch['prev_tokens'] = prev_tokens
-        batch['prev_token_mask'] = prev_tokens.eq(self.alphabet.mask_idx) 
+        batch['prev_token_mask'] = prev_tokens.eq(self.alphabet.mask_idx)
 
+        # Print masking statistics
+        total_tokens = batch['prev_token_mask'].numel()
+        masked_tokens = batch['prev_token_mask'].sum().item()
+        print(f"Total sequence length: {total_tokens}")
+        print(f"Number of masked tokens: {masked_tokens} ({masked_tokens/total_tokens*100:.2f}% of sequence)")
+        # print(f'[DEBUG - designer.py] Mask shape: {batch["prev_token_mask"].shape}, Sum of masked tokens: {batch["prev_token_mask"].sum().item()}')
+
+        # print('[DEBUG - designer.py] Generating with the following featurized batch:')
+        # print(f'Keys in batch: {batch.keys()}')
+        # print(f'prev_token_mask shape: {batch["prev_token_mask"].shape}, sum: {batch["prev_token_mask"].sum().item()}')
+        # Print strategy information
+        strategy = generator_args.get('strategy', self.cfg.generator.strategy)
+        print(f"Using generation strategy: {strategy}")
+        if strategy == 'cdr_mask_predict':
+            print("CDR-specific masking: Only tokens in CDR regions will be iteratively remasked based on confidence scores")
+        
+        # Use replace_visible_tokens=True to preserve non-masked tokens
         outputs = self.generator.generate(
-            model=self.model, 
+            model=self.model,
             batch=batch,
             need_attn_weights=need_attn_weights,
-            replace_visible_tokens=True,
+            replace_visible_tokens=True,  # Ensures non-masked regions remain fixed
             **generator_args
         )
+        
         output_tokens = outputs[0]
 
         original_segments = []
@@ -221,6 +269,8 @@ class Designer:
             designed_segment = self.alphabet.decode(
                 output_tokens[..., sid:eid+1].clone(), remove_special=False)
             designed_segments.append(designed_segment)
+            # print(f'[DEBUG - designer.py] Original segment [{sid}:{eid+1}]: {original_segment}')
+            # print(f'[DEBUG - designer.py] Designed segment [{sid}:{eid+1}]: {designed_segment}')
 
         output_tokens = self.alphabet.decode(output_tokens, remove_special=True)
         self._predictions = GenOut(
