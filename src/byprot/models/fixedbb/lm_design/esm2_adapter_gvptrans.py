@@ -66,6 +66,12 @@ class ESM2AdapterGVPTrans(FixedBackboneDesignEncoderDecoder):
         encoder_out['logits'] = encoder_logits
         encoder_out['init_pred'] = init_pred
         encoder_out['coord_mask'] = batch['coord_mask']
+        
+        # Pass the prev_token_mask to the encoder_out dictionary
+        # This is the mask indicating which positions are CDR regions (masked)
+        if 'prev_token_mask' in batch:
+            encoder_out['prev_token_mask'] = batch['prev_token_mask']
+            
         return encoder_out
 
     def forward_decoder(self, prev_decoder_out, encoder_out, need_attn_weights=False):
@@ -75,8 +81,9 @@ class ESM2AdapterGVPTrans(FixedBackboneDesignEncoderDecoder):
         temperature = prev_decoder_out['temperature']
         history = prev_decoder_out['history']
 
-        # output_masks = output_tokens.eq(self.mask_idx)  # & coord_mask
-        output_masks = output_tokens.ne(self.padding_idx)  # & coord_mask
+        # Define masks for all non-padding tokens and for CDR regions (masked tokens)
+        all_token_mask = output_tokens.ne(self.padding_idx)  # All non-padding tokens
+        cdr_mask = output_tokens.eq(self.mask_idx)  # Only CDR regions (masked tokens)
 
         esm_logits = self.decoder(
             # tokens=encoder_out['init_pred'],
@@ -91,8 +98,17 @@ class ESM2AdapterGVPTrans(FixedBackboneDesignEncoderDecoder):
 
         _tokens, _scores = sample_from_categorical(logits, temperature=temperature)
 
-        output_tokens.masked_scatter_(output_masks, _tokens[output_masks])
-        output_scores.masked_scatter_(output_masks, _scores[output_masks])
+        # Only update tokens in CDR regions (masked positions)
+        # This ensures non-CDR regions remain fixed during prediction
+        if 'prev_token_mask' in encoder_out:
+            # If we have explicit CDR mask information from the batch
+            cdr_mask = encoder_out['prev_token_mask']
+            output_tokens.masked_scatter_(cdr_mask, _tokens[cdr_mask])
+            output_scores.masked_scatter_(cdr_mask, _scores[cdr_mask])
+        else:
+            # Fall back to using mask_idx as indicator of CDR regions
+            output_tokens.masked_scatter_(cdr_mask, _tokens[cdr_mask])
+            output_scores.masked_scatter_(cdr_mask, _scores[cdr_mask])
 
         history.append(output_tokens.clone())
 
